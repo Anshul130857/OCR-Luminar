@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCR Luminar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div class="frame">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">OCR LUMINAR</span>
+    </div>
+    <div class="status-pill" id="engine-status">
+      <span class="dot" id="engine-dot"></span>
+      <span id="engine-text">checking model&hellip;</span>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="bed" id="drop-zone">
+      <div class="bed-inner" id="bed-inner">
+        <div class="scan-doc" id="scan-doc">
+          <svg viewBox="0 0 120 150" class="doc-svg" aria-hidden="true">
+            <rect x="4" y="4" width="112" height="142" rx="4" class="doc-page"/>
+            <line x1="20" y1="30" x2="100" y2="30" class="doc-line"/>
+            <line x1="20" y1="44" x2="100" y2="44" class="doc-line"/>
+            <line x1="20" y1="58" x2="76" y2="58" class="doc-line"/>
+            <line x1="20" y1="82" x2="100" y2="82" class="doc-line"/>
+            <line x1="20" y1="96" x2="100" y2="96" class="doc-line"/>
+            <line x1="20" y1="110" x2="60" y2="110" class="doc-line"/>
+          </svg>
+          <div class="scan-beam" id="scan-beam"></div>
+        </div>
+        <p class="bed-label">drop a pdf or scanned image, or</p>
+        <label class="browse-btn">
+          <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" hidden>
+          choose a file
+        </label>
+        <p class="bed-hint">pdf &middot; png &middot; jpg &middot; tiff &middot; bmp &middot; webp</p>
+      </div>
+    </section>
+
+    <section class="controls">
+      <div class="control-group">
+        <label for="format-select">output</label>
+        <select id="format-select">
+          <option value="both" selected>markdown + json</option>
+          <option value="md">markdown only</option>
+          <option value="json">json only</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label for="dpi-select">scan quality</label>
+        <select id="dpi-select">
+          <option value="150">150 dpi &mdash; fast</option>
+          <option value="200" selected>200 dpi &mdash; balanced</option>
+          <option value="300">300 dpi &mdash; high detail</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="queue">
+      <div class="queue-head">
+        <span>jobs</span>
+        <span class="queue-count" id="queue-count">0</span>
+      </div>
+      <div class="queue-list" id="queue-list">
+        <p class="queue-empty" id="queue-empty">nothing processed yet</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
