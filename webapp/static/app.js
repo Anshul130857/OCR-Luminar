@@ -136,8 +136,8 @@ function renderQueue() {
       ${
         job.status === "done"
           ? `<div class="job-actions">
-              ${job.outputs?.md ? `<a href="/api/jobs/${job.id}/download/md" download>markdown</a>` : ""}
-              ${job.outputs?.json ? `<a href="/api/jobs/${job.id}/download/json" download>json</a>` : ""}
+              ${job.available_formats?.includes("md") ? `<a href="/api/jobs/${job.id}/download/md" download>markdown</a>` : ""}
+              ${job.available_formats?.includes("json") ? `<a href="/api/jobs/${job.id}/download/json" download>json</a>` : ""}
             </div>`
           : ""
       }

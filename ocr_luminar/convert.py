@@ -49,6 +49,26 @@ def load_pages(path: Path, dpi: int = 200) -> list[Page]:
     raise ValueError(f"Unsupported file type: {ext}. Supported: {sorted(SUPPORTED_EXTS)}")
 
 
+def load_pages_from_bytes(data: bytes, filename: str, dpi: int = 200) -> list[Page]:
+    """Same as load_pages, but works entirely in memory -- nothing touches disk.
+    Used by the web app so uploaded files and rendered pages never get written
+    to the filesystem.
+    """
+    ext = Path(filename).suffix.lower()
+
+    if ext in IMAGE_EXTS:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        return [Page(index=0, image=img)]
+
+    if ext in PDF_EXTS:
+        from pdf2image import convert_from_bytes
+
+        images = convert_from_bytes(data, dpi=dpi)
+        return [Page(index=i, image=img.convert("RGB")) for i, img in enumerate(images)]
+
+    raise ValueError(f"Unsupported file type: {ext}. Supported: {sorted(SUPPORTED_EXTS)}")
+
+
 def image_to_png_bytes(img: Image.Image, max_dimension: int = 2200) -> bytes:
     """Downscale (if needed) and serialize a PIL image to PNG bytes for the OCR model."""
     w, h = img.size

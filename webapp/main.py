@@ -1,6 +1,12 @@
 """
 OCR Luminar web backend.
 
+Nothing this app processes is written to disk. Uploaded files are read into
+memory (bytes), pages are rendered to in-memory PIL images, and the final
+Markdown/JSON are held as strings in the in-memory job store -- served
+straight back to the browser on download. Restarting the server clears
+everything, by design.
+
 Design notes:
 - `engine` below is instantiated ONCE at module load time and shared by every
   request/thread. There is no per-job or per-thread engine, session, or model
@@ -12,13 +18,14 @@ Design notes:
   by PAGE_WORKERS -- tune this up on stronger GPUs. All pages of a job pull
   from the same shared `engine`, so raising PAGE_WORKERS increases concurrent
   *requests* against Ollama, not the number of models loaded.
-- Job state lives in an in-memory dict guarded by a lock. Fine for a single-
-  user local tool; swap for Redis/DB if this ever needs multiple clients.
+- Job state (including the in-memory output strings) lives in an in-memory
+  dict guarded by a lock. Fine for a single-user local tool; swap for
+  Redis/a DB if this ever needs to survive restarts or serve multiple people.
 """
 
 from __future__ import annotations
 
-import shutil
+import sys
 import threading
 import time
 import uuid
@@ -28,23 +35,16 @@ from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ocr_luminar.convert import image_to_png_bytes, is_supported, load_pages  # noqa: E402
+from ocr_luminar.convert import image_to_png_bytes, is_supported, load_pages_from_bytes  # noqa: E402
 from ocr_luminar.engine import GlmOcrEngine, OcrEngineError  # noqa: E402
-from ocr_luminar.writer import write_json, write_markdown  # noqa: E402
+from ocr_luminar.writer import build_json, build_markdown  # noqa: E402
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-UPLOAD_DIR = DATA_DIR / "uploads"
-OUTPUT_DIR = DATA_DIR / "outputs"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 PAGE_WORKERS = 4  # concurrent page requests per job -- raise on stronger GPUs
 
@@ -64,10 +64,10 @@ def _update(job_id: str, **kwargs) -> None:
         jobs[job_id].update(kwargs)
 
 
-def _run_job(job_id: str, file_path: Path, fmt: str, dpi: int) -> None:
+def _run_job(job_id: str, data: bytes, filename: str, fmt: str, dpi: int) -> None:
     try:
         _update(job_id, status="reading", started_at=time.time())
-        pages = load_pages(file_path, dpi=dpi)
+        pages = load_pages_from_bytes(data, filename, dpi=dpi)
         total = len(pages)
         _update(job_id, status="processing", total_pages=total, done_pages=0)
 
@@ -86,14 +86,15 @@ def _run_job(job_id: str, file_path: Path, fmt: str, dpi: int) -> None:
                 with jobs_lock:
                     jobs[job_id]["done_pages"] += 1
 
-        doc_name = file_path.stem
-        outputs: dict[str, str] = {}
+        results: dict[str, str] = {}
         if fmt in ("md", "both"):
-            outputs["md"] = str(write_markdown(OUTPUT_DIR, doc_name, page_markdowns))
+            results["md"] = build_markdown(page_markdowns)
         if fmt in ("json", "both"):
-            outputs["json"] = str(write_json(OUTPUT_DIR, doc_name, file_path, page_markdowns, engine.model))
+            results["json"] = build_json(filename, page_markdowns, engine.model)
 
-        _update(job_id, status="done", outputs=outputs, finished_at=time.time())
+        # `results` holds the final strings in memory only -- nothing is
+        # written to disk here or anywhere else in this request's lifetime.
+        _update(job_id, status="done", results=results, finished_at=time.time())
     except OcrEngineError as e:
         _update(job_id, status="error", error=str(e))
     except Exception as e:  # noqa: BLE001
@@ -111,13 +112,10 @@ def health() -> dict:
 
 @app.post("/api/jobs")
 async def create_job(file: UploadFile = File(...), format: str = "both", dpi: int = 200) -> dict:
-    dest = UPLOAD_DIR / f"{uuid.uuid4().hex}_{file.filename}"
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    if not is_supported(Path(file.filename)):
+        raise HTTPException(400, f"Unsupported file type: {Path(file.filename).suffix}")
 
-    if not is_supported(dest):
-        dest.unlink(missing_ok=True)
-        raise HTTPException(400, f"Unsupported file type: {dest.suffix}")
+    data = await file.read()  # held in memory only, never written to disk
 
     job_id = uuid.uuid4().hex
     with jobs_lock:
@@ -129,23 +127,32 @@ async def create_job(file: UploadFile = File(...), format: str = "both", dpi: in
             "total_pages": 0,
         }
 
-    job_pool.submit(_run_job, job_id, dest, format, dpi)
+    job_pool.submit(_run_job, job_id, data, file.filename, format, dpi)
     return {"job_id": job_id}
+
+
+def _public_view(job: dict[str, Any]) -> dict[str, Any]:
+    """Status info safe to send to the browser -- never includes the actual
+    OCR content, only which formats are ready to download."""
+    view = {k: v for k, v in job.items() if k != "results"}
+    if "results" in job:
+        view["available_formats"] = list(job["results"].keys())
+    return view
 
 
 @app.get("/api/jobs")
 def list_jobs() -> list[dict]:
     with jobs_lock:
-        return sorted(jobs.values(), key=lambda j: j.get("started_at", 0), reverse=True)
+        return [_public_view(j) for j in sorted(jobs.values(), key=lambda j: j.get("started_at", 0), reverse=True)]
 
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     with jobs_lock:
         job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found")
-    return job
+        if not job:
+            raise HTTPException(404, "Job not found")
+        return _public_view(job)
 
 
 @app.get("/api/jobs/{job_id}/download/{fmt}")
@@ -154,10 +161,18 @@ def download(job_id: str, fmt: str):
         job = jobs.get(job_id)
     if not job or job.get("status") != "done":
         raise HTTPException(404, "Result not ready")
-    path = job.get("outputs", {}).get(fmt)
-    if not path:
+    content = job.get("results", {}).get(fmt)
+    if content is None:
         raise HTTPException(404, f"Format '{fmt}' not available for this job")
-    return FileResponse(path, filename=Path(path).name)
+
+    doc_name = Path(job["filename"]).stem
+    media_type = "application/json" if fmt == "json" else "text/markdown"
+    ext = "json" if fmt == "json" else "md"
+    return PlainTextResponse(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{doc_name}.{ext}"'},
+    )
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")
